@@ -1,0 +1,191 @@
+# Precastfish art index. ONE file: it carries the build script inside, so nothing else needs uploading.
+# What it does: every day it reads LaunchBox's public games database (Metadata.zip), builds a small index per
+# platform, and saves it on a branch called "index-data" in this same repository.
+# Your index address is then:  https://raw.githubusercontent.com/YOUR-NAME/YOUR-REPO/index-data
+# (the run prints the exact address in its summary).
+name: Precastfish art index
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "17 6 * * *"
+permissions:
+  contents: write
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Write the build script
+        run: |
+          mkdir -p tools
+          cat > tools/build_launchbox_index.py <<'PYEOF'
+          #!/usr/bin/env python3
+          """Builds the small per-platform art index Precastfish downloads, from LaunchBox's public Metadata.zip.
+
+            python tools/build_launchbox_index.py                       # downloads Metadata.zip, writes ./index/*.json.gz
+            python tools/build_launchbox_index.py --zip Metadata.zip    # use a zip you already have
+            python tools/build_launchbox_index.py --out index --max-per-type 4
+
+          Output: index/<PLATFORM_ID>.json.gz   e.g. SWITCH.json.gz, XBOX360.json.gz, plus index/manifest.json
+          Each file: {"platform": "Nintendo Switch", "built": "2026-10-16", "games": [
+                        {"n": "Hades", "a": ["alt name"], "i": [["cover", "<guid>.jpg", "United States"], ...]} ]}
+          Image types are already mapped to the app's own: cover, back, spine, cart, disc, logo, hero, shot (the app puts cart or disc into its "label" slot).
+
+          The XML layout is written from LaunchBox forum posts, not from the real file. If it does not match, this script
+          stops and prints the element names it saw, so it can be fixed in minutes.
+          """
+          import argparse, gzip, json, os, sys, time, urllib.request, zipfile
+          import xml.etree.ElementTree as ET
+
+          URL = "https://gamesdb.launchbox-app.com/Metadata.zip"
+
+          # app platform id -> LaunchBox platform name
+          PLATFORMS = {
+              "SWITCH": "Nintendo Switch", "XBOX360": "Microsoft Xbox 360", "WIIU": "Nintendo Wii U", "WII": "Nintendo Wii",
+              "GC": "Nintendo GameCube", "N3DS": "Nintendo 3DS", "NDS": "Nintendo DS", "N64": "Nintendo 64",
+              "SNES": "Super Nintendo Entertainment System", "NES": "Nintendo Entertainment System",
+              "GBA": "Nintendo Game Boy Advance", "GB": "Nintendo Game Boy", "PS2": "Sony Playstation 2",
+              "PS1": "Sony Playstation", "PSP": "Sony PSP", "DC": "Sega Dreamcast", "GEN": "Sega Genesis",
+          }
+          # LaunchBox image type -> app art type
+          TYPES = {
+              "Box - Front": "cover", "Box - Back": "back", "Box - Spine": "spine",
+              "Cart - Front": "cart", "Disc": "disc", "Clear Logo": "logo", "Fanart - Background": "hero",
+              "Screenshot - Gameplay": "shot", "Screenshot - Game Title": "shot",
+          }
+          # regions we like first (the app can reorder; this only decides which few to keep per type)
+          REGION_RANK = ["North America", "United States", "World", "", "Europe", "Japan"]
+
+
+          def local(tag):
+              return tag.rsplit("}", 1)[-1]
+
+
+          def rank(region):
+              return REGION_RANK.index(region) if region in REGION_RANK else len(REGION_RANK)
+
+
+          def text(el, name):
+              for c in el:
+                  if local(c.tag) == name:
+                      return (c.text or "").strip()
+              return ""
+
+
+          def passes(zf, member):
+              with zf.open(member) as f:
+                  for _, el in ET.iterparse(f, events=("end",)):
+                      yield el
+
+
+          def main():
+              ap = argparse.ArgumentParser()
+              ap.add_argument("--zip", default="Metadata.zip")
+              ap.add_argument("--out", default="index")
+              ap.add_argument("--max-per-type", type=int, default=3)
+              ap.add_argument("--max-shots", type=int, default=3)
+              a = ap.parse_args()
+
+              if not os.path.exists(a.zip):
+                  print("downloading", URL)
+                  req = urllib.request.Request(URL, headers={"User-Agent": "Precastfish-index/0.1"})
+                  with urllib.request.urlopen(req) as r, open(a.zip, "wb") as o:
+                      while True:
+                          chunk = r.read(1 << 20)
+                          if not chunk:
+                              break
+                          o.write(chunk)
+              zf = zipfile.ZipFile(a.zip)
+              member = next((n for n in zf.namelist() if n.lower().endswith("metadata.xml")), None)
+              if member is None:
+                  sys.exit("no Metadata.xml in the zip. Files inside: " + ", ".join(zf.namelist()[:20]))
+
+              want = {v: k for k, v in PLATFORMS.items()}  # LaunchBox name -> app id
+              games = {}          # DatabaseID -> {"p": app id, "n": name, "a": [], "i": []}
+              seen_tags = {}
+
+              # pass 1: games of the platforms we care about
+              for el in passes(zf, member):
+                  t = local(el.tag)
+                  seen_tags[t] = seen_tags.get(t, 0) + 1
+                  if t == "Game":
+                      plat = text(el, "Platform")
+                      if plat in want:
+                          gid = text(el, "DatabaseID")
+                          name = text(el, "Name")
+                          if gid and name:
+                              games[gid] = {"p": want[plat], "n": name, "a": [], "i": []}
+                      el.clear()
+                  elif t in ("GameAlternateName", "GameImage"):
+                      pass
+                  elif el.tag and len(el) == 0 and t not in ("Name", "Platform", "DatabaseID"):
+                      pass
+              if not games:
+                  sys.exit("found no Game elements for the wanted platforms. Element names seen: " + json.dumps(dict(sorted(seen_tags.items(), key=lambda x: -x[1])[:25])))
+
+              # pass 2: alternate names and images for those games
+              imgs_seen = 0
+              for el in passes(zf, member):
+                  t = local(el.tag)
+                  if t == "GameAlternateName":
+                      g = games.get(text(el, "DatabaseID"))
+                      nm = text(el, "AlternateName")
+                      if g and nm:
+                          g["a"].append(nm)
+                      el.clear()
+                  elif t == "GameImage":
+                      imgs_seen += 1
+                      g = games.get(text(el, "DatabaseID"))
+                      kind = TYPES.get(text(el, "Type"))
+                      fn = text(el, "FileName")
+                      if g and kind and fn:
+                          g["i"].append([kind, fn, text(el, "Region")])
+                      el.clear()
+              if imgs_seen == 0:
+                  sys.exit("found games but no GameImage elements. Element names seen: " + json.dumps(dict(sorted(seen_tags.items(), key=lambda x: -x[1])[:25])))
+
+              os.makedirs(a.out, exist_ok=True)
+              manifest = {"built": time.strftime("%Y-%m-%d"), "platforms": {}}
+              by_plat = {}
+              for g in games.values():
+                  # keep a few images per type, best regions first
+                  kept = []
+                  for kind in ("cover", "back", "spine", "cart", "disc", "logo", "hero", "shot"):
+                      cand = sorted([i for i in g["i"] if i[0] == kind], key=lambda i: rank(i[2]))
+                      kept += cand[: (a.max_shots if kind == "shot" else a.max_per_type)]
+                  entry = {"n": g["n"], "i": kept}
+                  if g["a"]:
+                      entry["a"] = g["a"][:6]
+                  if kept:
+                      by_plat.setdefault(g["p"], []).append(entry)
+              for pid, lst in by_plat.items():
+                  lst.sort(key=lambda e: e["n"].lower())
+                  doc = {"platform": PLATFORMS[pid], "built": manifest["built"], "games": lst}
+                  path = os.path.join(a.out, pid + ".json.gz")
+                  with gzip.open(path, "wt", encoding="utf-8", compresslevel=9) as f:
+                      json.dump(doc, f, separators=(",", ":"), ensure_ascii=False)
+                  manifest["platforms"][pid] = {"games": len(lst), "bytes": os.path.getsize(path)}
+                  print("%-8s %6d games  %7.1f KB" % (pid, len(lst), os.path.getsize(path) / 1024))
+              with open(os.path.join(a.out, "manifest.json"), "w") as f:
+                  json.dump(manifest, f, indent=1)
+
+
+          if __name__ == "__main__":
+              main()
+
+          PYEOF
+      - name: Build the index
+        run: python tools/build_launchbox_index.py --out "$RUNNER_TEMP/out"
+      - name: Publish to the index-data branch
+        run: |
+          cd "$RUNNER_TEMP/out"
+          git init -q -b index-data
+          git config user.name "index-bot"
+          git config user.email "index-bot@users.noreply.github.com"
+          git add -A
+          git commit -q -m "art index $(date -u +%F)"
+          git push -f "https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/${{ github.repository }}.git" index-data
+          echo "Index address: https://raw.githubusercontent.com/${{ github.repository }}/index-data" | tee -a "$GITHUB_STEP_SUMMARY"
