@@ -1,0 +1,73 @@
+{
+ "built": "2026-11-21",
+ "platforms": {
+  "XBOX360": {
+   "games": 5809,
+   "bytes": 704162
+  },
+  "N3DS": {
+   "games": 1691,
+   "bytes": 290921
+  },
+  "N64": {
+   "games": 800,
+   "bytes": 159589
+  },
+  "NDS": {
+   "games": 4554,
+   "bytes": 994190
+  },
+  "NES": {
+   "games": 3755,
+   "bytes": 675351
+  },
+  "GB": {
+   "games": 1581,
+   "bytes": 286807
+  },
+  "GBA": {
+   "games": 2352,
+   "bytes": 481116
+  },
+  "GC": {
+   "games": 802,
+   "bytes": 194003
+  },
+  "SWITCH": {
+   "games": 5938,
+   "bytes": 722404
+  },
+  "WII": {
+   "games": 2278,
+   "bytes": 524191
+  },
+  "WIIU": {
+   "games": 799,
+   "bytes": 101308
+  },
+  "DC": {
+   "games": 914,
+   "bytes": 200779
+  },
+  "GEN": {
+   "games": 2186,
+   "bytes": 437783
+  },
+  "PS1": {
+   "games": 4636,
+   "bytes": 1103535
+  },
+  "PS2": {
+   "games": 4743,
+   "bytes": 1080654
+  },
+  "PSP": {
+   "games": 2023,
+   "bytes": 366418
+  },
+  "SNES": {
+   "games": 2938,
+   "bytes": 602794
+  }
+ }
+}
